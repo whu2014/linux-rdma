@@ -6,6 +6,7 @@
 
 #include "gdma.h"
 #include "hw_channel.h"
+#include <linux/auxiliary_bus.h>
 
 /* Microsoft Azure Network Adapter (MANA)'s definitions
  *
@@ -559,6 +560,11 @@ struct mana_tx_package {
 	struct mana_tx_oob tx_oob;
 
 	struct gdma_posted_wqe_info wqe_info;
+};
+
+struct mana_adev {
+	struct auxiliary_device adev;
+	struct gdma_dev *mdev;
 };
 
 #endif /* _MANA_H */
