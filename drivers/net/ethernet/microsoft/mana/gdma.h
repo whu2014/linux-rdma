@@ -27,6 +27,10 @@ enum gdma_request_type {
 	GDMA_CREATE_DMA_REGION		= 25,
 	GDMA_DMA_REGION_ADD_PAGES	= 26,
 	GDMA_DESTROY_DMA_REGION		= 27,
+	GDMA_CREATE_PD			= 29,
+	GDMA_DESTROY_PD			= 30,
+	GDMA_CREATE_MR			= 31,
+	GDMA_DESTROY_MR			= 32,
 };
 
 #define GDMA_RESOURCE_DOORBELL_PAGE	27
@@ -58,6 +62,8 @@ enum {
 	GDMA_DEVICE_HWC		= 1,
 	GDMA_DEVICE_MANA	= 2,
 };
+
+typedef u64 gdma_obj_handle_t;
 
 struct gdma_resource {
 	/* Protect the bitmap */
@@ -192,7 +198,7 @@ struct gdma_mem_info {
 	u64 length;
 
 	/* Allocated by the PF driver */
-	u64 gdma_region;
+	gdma_obj_handle_t dma_region_handle;
 };
 
 #define REGISTER_ATB_MST_MKEY_LOWER_SIZE 8
@@ -599,7 +605,7 @@ struct gdma_create_queue_req {
 	u32 reserved1;
 	u32 pdid;
 	u32 doolbell_id;
-	u64 gdma_region;
+	gdma_obj_handle_t gdma_region;
 	u32 reserved2;
 	u32 queue_size;
 	u32 log2_throttle_limit;
@@ -625,6 +631,28 @@ struct gdma_disable_queue_req {
 	u32 queue_index;
 	u32 alloc_res_id_on_creation;
 }; /* HW DATA */
+
+enum atb_page_size {
+	ATB_PAGE_SIZE_4K,
+	ATB_PAGE_SIZE_8K,
+	ATB_PAGE_SIZE_16K,
+	ATB_PAGE_SIZE_32K,
+	ATB_PAGE_SIZE_64K,
+	ATB_PAGE_SIZE_128K,
+	ATB_PAGE_SIZE_256K,
+	ATB_PAGE_SIZE_512K,
+	ATB_PAGE_SIZE_1M,
+	ATB_PAGE_SIZE_2M,
+	ATB_PAGE_SIZE_MAX,
+};
+
+enum gdma_mr_access_flags {
+	GDMA_ACCESS_FLAG_LOCAL_READ = (1 << 0),
+	GDMA_ACCESS_FLAG_LOCAL_WRITE = (1 << 1),
+	GDMA_ACCESS_FLAG_REMOTE_READ = (1 << 2),
+	GDMA_ACCESS_FLAG_REMOTE_WRITE = (1 << 3),
+	GDMA_ACCESS_FLAG_REMOTE_ATOMIC = (1 << 4),
+};
 
 /* GDMA_CREATE_DMA_REGION */
 struct gdma_create_dma_region_req {
@@ -652,14 +680,14 @@ struct gdma_create_dma_region_req {
 
 struct gdma_create_dma_region_resp {
 	struct gdma_resp_hdr hdr;
-	u64 gdma_region;
+	gdma_obj_handle_t dma_region_handle;
 }; /* HW DATA */
 
 /* GDMA_DMA_REGION_ADD_PAGES */
 struct gdma_dma_region_add_pages_req {
 	struct gdma_req_hdr hdr;
 
-	u64 gdma_region;
+	gdma_obj_handle_t dma_region_handle;
 
 	u32 page_addr_list_len;
 	u32 reserved3;
@@ -671,8 +699,113 @@ struct gdma_dma_region_add_pages_req {
 struct gdma_destroy_dma_region_req {
 	struct gdma_req_hdr hdr;
 
-	u64 gdma_region;
+	gdma_obj_handle_t dma_region_handle;
 }; /* HW DATA */
+
+enum gdma_pd_flags {
+	GDMA_PD_FLAG_ALLOW_GPA_MR = (1 << 0),
+	GDMA_PD_FLAG_ALLOW_FMR_MR = (1 << 1),
+};
+
+struct gdma_create_pd_req {
+	struct gdma_req_hdr hdr;
+	enum gdma_pd_flags flags;
+	u32 reserved;
+};
+
+struct gdma_create_pd_resp {
+	struct gdma_resp_hdr hdr;
+	gdma_obj_handle_t pd_handle;
+	u32 pd_id;
+	u32 reserved;
+};
+
+struct gdma_destroy_pd_req {
+	struct gdma_req_hdr hdr;
+	gdma_obj_handle_t pd_handle;
+};
+
+struct gdma_destory_pd_resp {
+	struct gdma_resp_hdr hdr;
+};
+
+enum gdma_mr_type {
+	/* Guest Physical Address - MRs of this type allow access
+	 * to any DMA-mapped memory using bus-logical address
+	 */
+	GDMA_MR_TYPE_GPA = 1,
+
+	/* Guest Virtual Address - MRs of this type allow access
+	 * to memory mapped by PTEs associated with this MR using a virtual
+	 * address that is set up in the MST
+	 */
+	GDMA_MR_TYPE_GVA,
+
+	/* Fast Memory Register - Like GVA but the MR is initially put in the
+	 * FREE state (as opposed to Valid), and the specified number of
+	 * PTEs are reserved for future fast memory reservations.
+	 */
+	GDMA_MR_TYPE_FMR,
+};
+
+struct gdma_create_mr_params {
+	gdma_obj_handle_t pd_handle;
+	enum gdma_mr_type mr_type;
+	union {
+		struct {
+			gdma_obj_handle_t dma_region_handle;
+			u64 virtual_address;
+			enum gdma_mr_access_flags access_flags;
+		} gva;
+		struct {
+			enum gdma_mr_access_flags access_flags;
+		} gpa;
+		struct {
+			enum atb_page_size page_size;
+			u32  reserved_pte_count;
+		} fmr;
+	};
+};
+
+struct gdma_create_mr_request {
+	struct gdma_req_hdr hdr;
+	gdma_obj_handle_t pd_handle;
+	enum gdma_mr_type mr_type;
+	u32 reserved;
+
+	union {
+		struct {
+			enum gdma_mr_access_flags access_flags;
+		} gpa;
+
+		struct {
+			gdma_obj_handle_t dma_region_handle;
+			u64 virtual_address;
+			enum gdma_mr_access_flags access_flags;
+		} gva;
+
+		struct {
+			enum atb_page_size page_size;
+			u32 reserved_pte_count;
+		} fmr;
+	};
+};
+
+struct gdma_create_mr_response {
+	struct gdma_resp_hdr hdr;
+	gdma_obj_handle_t mr_handle;
+	u32 lkey;
+	u32 rkey;
+};
+
+struct gdma_destroy_mr_request {
+	struct gdma_req_hdr hdr;
+	gdma_obj_handle_t mr_handle;
+};
+
+struct gdma_destroy_mr_response {
+	struct gdma_resp_hdr hdr;
+};
 
 int mana_gd_verify_vf_version(struct pci_dev *pdev);
 
@@ -704,5 +837,8 @@ int mana_gd_send_request(struct gdma_context *gc, u32 req_len, const void *req,
 int mana_gd_allocate_doorbell_page(struct gdma_context *gc, int *doorbell_page);
 
 int mana_gd_destroy_doorbell_page(struct gdma_context *gc, int doorbell_page);
+
+int mana_gd_destroy_dma_region(struct gdma_context *gc,
+			       gdma_obj_handle_t dma_region_handle);
 
 #endif /* _GDMA_H */
