@@ -3715,6 +3715,7 @@ static const struct ib_device_ops mlx5_ib_dev_ops = {
 	.get_dev_fw_str = get_dev_fw_str,
 	.get_dma_mr = mlx5_ib_get_dma_mr,
 	.get_link_layer = mlx5_ib_port_link_layer,
+	.get_qp_err_syndrome = mlx5_ib_get_qp_err_syndrome,
 	.map_mr_sg = mlx5_ib_map_mr_sg,
 	.map_mr_sg_pi = mlx5_ib_map_mr_sg_pi,
 	.mmap = mlx5_ib_mmap,

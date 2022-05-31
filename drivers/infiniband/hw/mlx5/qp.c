@@ -4808,7 +4808,8 @@ static int query_qp_attr(struct mlx5_ib_dev *dev, struct mlx5_ib_qp *qp,
 	if (!outb)
 		return -ENOMEM;
 
-	err = mlx5_core_qp_query(dev, &qp->trans_qp.base.mqp, outb, outlen);
+	err = mlx5_core_qp_query(dev, &qp->trans_qp.base.mqp, outb, outlen,
+				 false);
 	if (err)
 		goto out;
 
@@ -4991,6 +4992,45 @@ int mlx5_ib_query_qp(struct ib_qp *ibqp, struct ib_qp_attr *qp_attr,
 
 out:
 	mutex_unlock(&qp->mutex);
+	return err;
+}
+
+int mlx5_ib_get_qp_err_syndrome(struct ib_qp *ibqp, char *str)
+{
+	struct mlx5_ib_dev *dev = to_mdev(ibqp->device);
+	int outlen = MLX5_ST_SZ_BYTES(query_qp_out);
+	struct mlx5_ib_qp *qp = to_mqp(ibqp);
+	void *pas_ext_union, *err_syn;
+	u32 *outb;
+	int err;
+
+	if (!MLX5_CAP_GEN(dev->mdev, qpc_extension) ||
+	    !MLX5_CAP_GEN(dev->mdev, qp_error_syndrome))
+		return -EOPNOTSUPP;
+
+	outb = kzalloc(outlen, GFP_KERNEL);
+	if (!outb)
+		return -ENOMEM;
+
+	err = mlx5_core_qp_query(dev, &qp->trans_qp.base.mqp, outb, outlen,
+				 true);
+	if (err)
+		goto out;
+
+	pas_ext_union =
+		MLX5_ADDR_OF(query_qp_out, outb, qp_pas_or_qpc_ext_and_pas);
+	err_syn = MLX5_ADDR_OF(qpc_extension_and_pas_list_in, pas_ext_union,
+			       qpc_data_extension.error_syndrome);
+
+	scnprintf(str, IB_ERR_SYNDROME_LENGTH, "%s (0x%x 0x%x 0x%x)\n",
+		  ib_wc_status_msg(
+			  MLX5_GET(cqe_error_syndrome, err_syn, syndrome)),
+		  MLX5_GET(cqe_error_syndrome, err_syn, vendor_error_syndrome),
+		  MLX5_GET(cqe_error_syndrome, err_syn, hw_syndrome_type),
+		  MLX5_GET(cqe_error_syndrome, err_syn, hw_error_syndrome));
+
+out:
+	kfree(outb);
 	return err;
 }
 
