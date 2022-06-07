@@ -99,6 +99,7 @@ struct nvme_rdma_queue {
 	bool			pi_support;
 	int			cq_size;
 	struct mutex		queue_lock;
+	struct work_struct	qp_err_work;
 };
 
 struct nvme_rdma_ctrl {
@@ -237,11 +238,31 @@ out_free_ring:
 	return NULL;
 }
 
+static void nvme_rdma_qp_error_work(struct work_struct *work)
+{
+	struct nvme_rdma_queue *queue = container_of(work,
+			struct nvme_rdma_queue, qp_err_work);
+	int ret;
+	char err[IB_ERR_SYNDROME_LENGTH];
+
+	ret = ib_get_qp_err_syndrome(queue->qp, err);
+	if (ret)
+		return;
+
+	pr_err("Queue %d got QP error syndrome %s\n",
+	       nvme_rdma_queue_idx(queue), err);
+}
+
 static void nvme_rdma_qp_event(struct ib_event *event, void *context)
 {
+	struct nvme_rdma_queue *queue = context;
+
 	pr_debug("QP event %s (%d)\n",
 		 ib_event_msg(event->event), event->event);
 
+	if (event->event == IB_EVENT_QP_FATAL ||
+	    event->event == IB_EVENT_QP_ACCESS_ERR)
+		queue_work(nvme_wq, &queue->qp_err_work);
 }
 
 static int nvme_rdma_wait_for_cm(struct nvme_rdma_queue *queue)
@@ -261,7 +282,9 @@ static int nvme_rdma_create_qp(struct nvme_rdma_queue *queue, const int factor)
 	struct ib_qp_init_attr init_attr;
 	int ret;
 
+	INIT_WORK(&queue->qp_err_work, nvme_rdma_qp_error_work);
 	memset(&init_attr, 0, sizeof(init_attr));
+	init_attr.qp_context = queue;
 	init_attr.event_handler = nvme_rdma_qp_event;
 	/* +1 for drain */
 	init_attr.cap.max_send_wr = factor * queue->queue_size + 1;
@@ -434,6 +457,7 @@ static void nvme_rdma_destroy_queue_ib(struct nvme_rdma_queue *queue)
 		ib_mr_pool_destroy(queue->qp, &queue->qp->sig_mrs);
 	ib_mr_pool_destroy(queue->qp, &queue->qp->rdma_mrs);
 
+	flush_work(&queue->qp_err_work);
 	/*
 	 * The cm_id object might have been destroyed during RDMA connection
 	 * establishment error flow to avoid getting other cma events, thus
