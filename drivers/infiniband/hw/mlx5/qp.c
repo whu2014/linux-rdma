@@ -2946,7 +2946,7 @@ static int process_vendor_flags(struct mlx5_ib_dev *dev, struct mlx5_ib_qp *qp,
 	return (flags) ? -EINVAL : 0;
 	}
 
-static void process_create_flag(struct mlx5_ib_dev *dev, int *flags, int flag,
+static void process_create_flag(struct mlx5_ib_dev *dev, u64 *flags, u64 flag,
 				bool cond, struct mlx5_ib_qp *qp)
 {
 	if (!(*flags & flag))
@@ -2966,7 +2966,8 @@ static void process_create_flag(struct mlx5_ib_dev *dev, int *flags, int flag,
 		*flags &= ~MLX5_IB_QP_CREATE_WC_TEST;
 		return;
 	}
-	mlx5_ib_dbg(dev, "Verbs create QP flag 0x%X is not supported\n", flag);
+	mlx5_ib_dbg(dev, "Verbs create QP flag 0x%llX is not supported\n",
+		    flag);
 }
 
 static int process_create_flags(struct mlx5_ib_dev *dev, struct mlx5_ib_qp *qp,
@@ -2974,7 +2975,7 @@ static int process_create_flags(struct mlx5_ib_dev *dev, struct mlx5_ib_qp *qp,
 {
 	enum ib_qp_type qp_type = qp->type;
 	struct mlx5_core_dev *mdev = dev->mdev;
-	int create_flags = attr->create_flags;
+	u64 create_flags = attr->create_flags;
 	bool cond;
 
 	if (qp_type == MLX5_IB_QPT_DCT)
@@ -3032,7 +3033,7 @@ static int process_create_flags(struct mlx5_ib_dev *dev, struct mlx5_ib_qp *qp,
 			    true, qp);
 
 	if (create_flags) {
-		mlx5_ib_dbg(dev, "Create QP has unsupported flags 0x%X\n",
+		mlx5_ib_dbg(dev, "Create QP has unsupported flags 0x%llX\n",
 			    create_flags);
 		return -EOPNOTSUPP;
 	}
