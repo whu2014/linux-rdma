@@ -1952,6 +1952,14 @@ int ib_query_qp(struct ib_qp *qp,
 }
 EXPORT_SYMBOL(ib_query_qp);
 
+int ib_get_qp_err_syndrome(struct ib_qp *qp, char *str)
+{
+	return qp->device->ops.get_qp_err_syndrome ?
+		qp->device->ops.get_qp_err_syndrome(qp->real_qp,
+						    str) : -EOPNOTSUPP;
+}
+EXPORT_SYMBOL(ib_get_qp_err_syndrome);
+
 int ib_close_qp(struct ib_qp *qp)
 {
 	struct ib_qp *real_qp;

@@ -2465,6 +2465,7 @@ struct ib_device_ops {
 			 int qp_attr_mask, struct ib_udata *udata);
 	int (*query_qp)(struct ib_qp *qp, struct ib_qp_attr *qp_attr,
 			int qp_attr_mask, struct ib_qp_init_attr *qp_init_attr);
+	int (*get_qp_err_syndrome)(struct ib_qp *qp, char *str);
 	int (*destroy_qp)(struct ib_qp *qp, struct ib_udata *udata);
 	int (*create_cq)(struct ib_cq *cq, const struct ib_cq_init_attr *attr,
 			 struct ib_udata *udata);
@@ -3776,6 +3777,18 @@ int ib_query_qp(struct ib_qp *qp,
 		struct ib_qp_attr *qp_attr,
 		int qp_attr_mask,
 		struct ib_qp_init_attr *qp_init_attr);
+
+#define IB_ERR_SYNDROME_LENGTH 256
+
+/**
+ * ib_get_qp_err_syndrome - Returns a string that describes the reason
+ * the specified QP moved to error state.
+ * @qp : The QP to query.
+ * @str: The reason the qp moved to error state.
+ *
+ * NOTE: the user must pass a str with size of at least IB_ERR_SYNDROME_LENGTH
+ */
+int ib_get_qp_err_syndrome(struct ib_qp *qp, char *str);
 
 /**
  * ib_destroy_qp - Destroys the specified QP.
