@@ -5251,7 +5251,7 @@ smb2_copy_fs_info_to_kstatfs(struct smb2_fs_full_size_info *pfs_inf,
 	return;
 }
 
-static void
+void
 copy_posix_fs_info_to_kstatfs(FILE_SYSTEM_POSIX_INFO *response_data,
 			struct kstatfs *kst)
 {
