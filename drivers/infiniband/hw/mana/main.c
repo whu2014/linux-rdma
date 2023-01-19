@@ -372,6 +372,12 @@ int mana_ib_gd_create_dma_region(struct mana_ib_dev *dev, struct ib_umem *umem,
 
 	page_addr_list = create_req->page_addr_list;
 	rdma_umem_for_each_dma_block(umem, &biter, page_sz) {
+		u32 expected_status = 0;
+
+		if (num_pages_processed + num_pages_to_handle <
+		    num_pages_total)
+			expected_status = GDMA_STATUS_MORE_ENTRIES;
+
 		page_addr_list[tail++] = rdma_block_iter_dma_address(&biter);
 		if (tail < num_pages_to_handle)
 			continue;
@@ -392,14 +398,8 @@ int mana_ib_gd_create_dma_region(struct mana_ib_dev *dev, struct ib_umem *umem,
 			page_addr_list = add_req->page_addr_list;
 		} else {
 			/* Subsequent create messages */
-			u32 expected_s = 0;
-
-			if (num_pages_processed + num_pages_to_handle <
-			    num_pages_total)
-				expected_s = GDMA_STATUS_MORE_ENTRIES;
-
 			err = mana_ib_gd_add_dma_region(dev, gc, add_req, tail,
-							expected_s);
+							expected_status);
 			if (err)
 				break;
 		}
