@@ -32,6 +32,8 @@ static int mana_ib_cfg_vport_steering(struct mana_ib_dev *dev,
 
 	mana_gd_init_req_hdr(&req->hdr, MANA_CONFIG_VPORT_RX, req_buf_size,
 			     sizeof(resp));
+#define GDMA_MESSAGE_V3	3
+	req->hdr.req.msg_version = GDMA_MESSAGE_V3;
 
 	req->vport = mpc->port_handle;
 	req->rx_enable = 1;
@@ -46,6 +48,27 @@ static int mana_ib_cfg_vport_steering(struct mana_ib_dev *dev,
 	req->num_indir_entries = MANA_INDIRECT_TABLE_SIZE;
 	req->indir_tab_offset = sizeof(*req);
 	req->update_indir_tab = true;
+	req->cqe_coalescing_enable = true;
+
+	// BNIC HW Hash Types
+#define BNIC_HASH_IPV4          0x00000001
+#define BNIC_HASH_TCP_IPV4      0x00000002
+#define BNIC_HASH_UDP_IPV4      0x00000004
+#define BNIC_HASH_IPV6          0x00000008
+#define BNIC_HASH_TCP_IPV6      0x00000010
+#define BNIC_HASH_UDP_IPV6      0x00000020
+#define BNIC_HASH_IPV6_EX       0x00000040
+#define BNIC_HASH_TCP_IPV6_EX   0x00000080
+#define BNIC_HASH_UDP_IPV6_EX   0x00000100
+
+// IPv6 extensions are not supported thus not part of these macros
+#define RSS_UDP_HASH_TYPE_ENABLE    ((u16)(BNIC_HASH_UDP_IPV4  | BNIC_HASH_UDP_IPV6 ))
+#define RSS_TCP_HASH_TYPE_ENABLE    ((u16)(BNIC_HASH_TCP_IPV4  | BNIC_HASH_TCP_IPV6 ))
+#define RSS_IP_HASH_TYPE_ENABLE     ((u16)(BNIC_HASH_IPV4      | BNIC_HASH_IPV6     ))
+
+#define RSS_HASH_TYPE_ENABLE_ALL    ((u16)(RSS_UDP_HASH_TYPE_ENABLE | RSS_TCP_HASH_TYPE_ENABLE | RSS_IP_HASH_TYPE_ENABLE))
+
+	req->rss_hash_types = RSS_HASH_TYPE_ENABLE_ALL;
 
 	req_indir_tab = (mana_handle_t *)(req + 1);
 	/* The ind table passed to the hardware must have
