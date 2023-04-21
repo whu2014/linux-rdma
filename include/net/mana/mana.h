@@ -561,6 +561,23 @@ struct mana_cfg_rx_steer_req {
 	u8 hashkey[MANA_HASH_KEY_SIZE];
 }; /* HW DATA */
 
+struct mana_cfg_rx_steer_req_v2 {
+	struct gdma_req_hdr hdr;
+	mana_handle_t vport;
+	u16 num_indir_entries;
+	u16 indir_tab_offset;
+	u32 rx_enable;
+	u32 rss_enable;
+	u8 update_default_rxobj;
+	u8 update_hashkey;
+	u8 update_indir_tab;
+	u8 reserved;
+	mana_handle_t default_rxobj;
+	u8 hashkey[MANA_HASH_KEY_SIZE];
+	u8 cqe_coalescing_enable;
+	u8 reserved2[7];
+}; /* HW DATA */
+
 struct mana_cfg_rx_steer_resp {
 	struct gdma_resp_hdr hdr;
 }; /* HW DATA */
