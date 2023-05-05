@@ -131,6 +131,7 @@ union stream_update_flags {
 		uint32_t dsc_changed : 1;
 		uint32_t mst_bw : 1;
 		uint32_t crtc_timing_adjust : 1;
+		uint32_t fams_changed : 1;
 	} bits;
 
 	uint32_t raw;
@@ -171,6 +172,10 @@ struct mall_temp_config {
 	bool is_phantom_plane[MAX_PIPES];
 };
 
+struct dc_stream_debug_options {
+	char force_odm_combine_segments;
+};
+
 struct dc_stream_state {
 	// sink is deprecated, new code should not reference
 	// this pointer
@@ -181,6 +186,7 @@ struct dc_stream_state {
 	 * a stream via the volatile dc_state rather than the static dc_link.
 	 */
 	struct link_encoder *link_enc;
+	struct dc_stream_debug_options debug;
 	struct dc_panel_patch sink_patches;
 	union display_content_support content_support;
 	struct dc_crtc_timing timing;
