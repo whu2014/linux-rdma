@@ -96,16 +96,20 @@ static int mana_ib_create_qp_rss(struct ib_qp *ibqp, struct ib_pd *pd,
 	struct mana_ib_qp *qp = container_of(ibqp, struct mana_ib_qp, ibqp);
 	struct mana_ib_dev *mdev =
 		container_of(pd->device, struct mana_ib_dev, ib_dev);
+	struct ib_ucontext *ib_ucontext = pd->uobject->context;
 	struct ib_rwq_ind_table *ind_tbl = attr->rwq_ind_tbl;
 	struct mana_ib_create_qp_rss_resp resp = {};
 	struct mana_ib_create_qp_rss ucmd = {};
+	struct mana_ib_ucontext *mana_ucontext;
 	struct gdma_dev *gd = mdev->gdma_dev;
 	mana_handle_t *mana_ind_table;
 	struct mana_port_context *mpc;
+	struct gdma_queue *gdma_cq;
 	struct mana_context *mc;
 	struct net_device *ndev;
 	struct mana_ib_cq *cq;
 	struct mana_ib_wq *wq;
+	struct mana_eq *eq;
 	unsigned int ind_tbl_size;
 	struct ib_cq *ibcq;
 	struct ib_wq *ibwq;
@@ -114,6 +118,8 @@ static int mana_ib_create_qp_rss(struct ib_qp *ibqp, struct ib_pd *pd,
 	int ret;
 
 	mc = gd->driver_data;
+	mana_ucontext =
+		container_of(ib_ucontext, struct mana_ib_ucontext, ibucontext);
 
 	if (!udata || udata->inlen < sizeof(ucmd))
 		return -EINVAL;
@@ -180,6 +186,7 @@ static int mana_ib_create_qp_rss(struct ib_qp *ibqp, struct ib_pd *pd,
 	for (i = 0; i < ind_tbl_size; i++) {
 		struct mana_obj_spec wq_spec = {};
 		struct mana_obj_spec cq_spec = {};
+		unsigned int max_num_queues = gd->gdma_context->max_num_queues;
 
 		ibwq = ind_tbl->ind_tbl[i];
 		wq = container_of(ibwq, struct mana_ib_wq, ibwq);
@@ -193,7 +200,8 @@ static int mana_ib_create_qp_rss(struct ib_qp *ibqp, struct ib_pd *pd,
 		cq_spec.gdma_region = cq->gdma_region;
 		cq_spec.queue_size = cq->cqe * COMP_ENTRY_SIZE;
 		cq_spec.modr_ctx_id = 0;
-		cq_spec.attached_eq = GDMA_CQ_NO_EQ;
+		eq = &mana_ucontext->eqs[cq->comp_vector % max_num_queues];
+		cq_spec.attached_eq = eq->eq->id;
 
 		ret = mana_create_wq_obj(mpc, mpc->port_handle, GDMA_RQ,
 					 &wq_spec, &cq_spec, &wq->rx_object);
@@ -207,6 +215,9 @@ static int mana_ib_create_qp_rss(struct ib_qp *ibqp, struct ib_pd *pd,
 		wq->id = wq_spec.queue_index;
 		cq->id = cq_spec.queue_index;
 
+		ibdev_dbg(&mdev->ib_dev, "attached eq id %u  cq with id %llu\n",
+			eq->eq->id, cq->id);
+
 		ibdev_dbg(&mdev->ib_dev,
 			  "ret %d rx_object 0x%llx wq id %llu cq id %llu\n",
 			  ret, wq->rx_object, wq->id, cq->id);
@@ -215,6 +226,26 @@ static int mana_ib_create_qp_rss(struct ib_qp *ibqp, struct ib_pd *pd,
 		resp.entries[i].wqid = wq->id;
 
 		mana_ind_table[i] = wq->rx_object;
+
+		if ((gdma_cq = gd->gdma_context->cq_table[cq->id]) == NULL) {
+
+			gdma_cq = kzalloc(sizeof(*gdma_cq), GFP_KERNEL);
+			if(!gdma_cq) {
+				ibdev_dbg(&mdev->ib_dev,
+					 "failed to allocate gdma_cq\n");
+				goto free_cq;
+			}
+
+			ibdev_dbg(&mdev->ib_dev, "gdma cq allocated %p \n",
+				  gdma_cq);
+
+			gdma_cq->cq.context = cq;
+			gdma_cq->type = GDMA_CQ;
+			gdma_cq->cq.callback = mana_ib_cq_handler;
+			gdma_cq->id = cq->id;
+			gd->gdma_context->cq_table[cq->id] = gdma_cq;
+		}
+
 	}
 	resp.num_entries = i;
 
@@ -224,7 +255,7 @@ static int mana_ib_create_qp_rss(struct ib_qp *ibqp, struct ib_pd *pd,
 					 ucmd.rx_hash_key_len,
 					 ucmd.rx_hash_key);
 	if (ret)
-		goto fail;
+		goto free_cq;
 
 	ret = ib_copy_to_udata(udata, &resp, sizeof(resp));
 	if (ret) {
@@ -237,6 +268,22 @@ static int mana_ib_create_qp_rss(struct ib_qp *ibqp, struct ib_pd *pd,
 	kfree(mana_ind_table);
 
 	return 0;
+
+free_cq:
+	{
+		int j = i;
+		u64 cqid;
+		while (j-- > 0) {
+			cqid = resp.entries[j].cqid;
+			gdma_cq = gd->gdma_context->cq_table[cqid];
+			cq = gdma_cq->cq.context;
+			if (atomic_read(&cq->ibcq.usecnt) == 0) {
+				kfree(gd->gdma_context->cq_table[cqid]);
+				gd->gdma_context->cq_table[cqid] = NULL;
+			}
+		}
+
+	}
 
 fail:
 	while (i-- > 0) {
@@ -269,10 +316,12 @@ static int mana_ib_create_qp_raw(struct ib_qp *ibqp, struct ib_pd *ibpd,
 	struct mana_obj_spec wq_spec = {};
 	struct mana_obj_spec cq_spec = {};
 	struct mana_port_context *mpc;
+	struct gdma_queue *gdma_cq;
 	struct mana_context *mc;
 	struct net_device *ndev;
 	struct ib_umem *umem;
-	int err;
+	struct mana_eq *eq;
+	int err, eq_vec;
 	u32 port;
 
 	mc = gd->driver_data;
@@ -350,7 +399,9 @@ static int mana_ib_create_qp_raw(struct ib_qp *ibqp, struct ib_pd *ibpd,
 	cq_spec.gdma_region = send_cq->gdma_region;
 	cq_spec.queue_size = send_cq->cqe * COMP_ENTRY_SIZE;
 	cq_spec.modr_ctx_id = 0;
-	cq_spec.attached_eq = GDMA_CQ_NO_EQ;
+	eq_vec = send_cq->comp_vector % gd->gdma_context->max_num_queues;
+	eq = &mana_ucontext->eqs[eq_vec];
+	cq_spec.attached_eq = eq->eq->id;
 
 	err = mana_create_wq_obj(mpc, mpc->port_handle, GDMA_SQ, &wq_spec,
 				 &cq_spec, &qp->tx_object);
@@ -368,6 +419,22 @@ static int mana_ib_create_qp_raw(struct ib_qp *ibqp, struct ib_pd *ibpd,
 	qp->sq_id = wq_spec.queue_index;
 	send_cq->id = cq_spec.queue_index;
 
+	if ((gdma_cq = gd->gdma_context->cq_table[send_cq->id]) == NULL) {
+
+		gdma_cq = kzalloc(sizeof(*gdma_cq), GFP_KERNEL);
+		if(!gdma_cq) {
+			pr_err("failed to allocate gdma_cq\n");
+			goto err_destroy_wqobj_and_cq;
+		}
+
+		pr_debug("gdma cq allocated %p \n", gdma_cq);
+		gdma_cq->cq.context = send_cq;
+		gdma_cq->type = GDMA_CQ;
+		gdma_cq->cq.callback = mana_ib_cq_handler;
+		gdma_cq->id = send_cq->id;
+		gd->gdma_context->cq_table[send_cq->id] = gdma_cq;
+	}
+
 	ibdev_dbg(&mdev->ib_dev,
 		  "ret %d qp->tx_object 0x%llx sq id %llu cq id %llu\n", err,
 		  qp->tx_object, qp->sq_id, send_cq->id);
@@ -381,12 +448,17 @@ static int mana_ib_create_qp_raw(struct ib_qp *ibqp, struct ib_pd *ibpd,
 		ibdev_dbg(&mdev->ib_dev,
 			  "Failed copy udata for create qp-raw, %d\n",
 			  err);
-		goto err_destroy_wq_obj;
+		goto err_destroy_wqobj_and_cq;
 	}
 
 	return 0;
 
-err_destroy_wq_obj:
+err_destroy_wqobj_and_cq:
+	if (atomic_read(&send_cq->ibcq.usecnt) == 0) {
+		kfree(gdma_cq);
+		gd->gdma_context->cq_table[send_cq->id] = NULL;
+	}
+
 	mana_destroy_wq_obj(mpc, GDMA_SQ, qp->tx_object);
 
 err_destroy_dma_region:

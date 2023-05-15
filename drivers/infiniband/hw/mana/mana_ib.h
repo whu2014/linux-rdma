@@ -67,6 +67,7 @@ struct mana_ib_cq {
 	int cqe;
 	u64 gdma_region;
 	u64 id;
+	u32 comp_vector;
 };
 
 struct mana_ib_qp {
@@ -86,6 +87,7 @@ struct mana_ib_qp {
 struct mana_ib_ucontext {
 	struct ib_ucontext ibucontext;
 	u32 doorbell;
+	struct mana_eq *eqs;
 };
 
 struct mana_ib_rwq_ind_table {
@@ -158,5 +160,7 @@ int mana_ib_query_gid(struct ib_device *ibdev, u32 port, int index,
 		      union ib_gid *gid);
 
 void mana_ib_disassociate_ucontext(struct ib_ucontext *ibcontext);
+
+void mana_ib_cq_handler(void* ctx, struct gdma_queue *gdma_cq);
 
 #endif

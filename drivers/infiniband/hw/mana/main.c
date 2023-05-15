@@ -143,6 +143,75 @@ int mana_ib_dealloc_pd(struct ib_pd *ibpd, struct ib_udata *udata)
 	return err;
 }
 
+static void mana_ib_destroy_eq(struct mana_ib_ucontext *ucontext,
+			       struct mana_ib_dev *mdev)
+{
+	struct gdma_context *gc = mdev->gdma_dev->gdma_context;
+	struct ib_device *ibdev = ucontext->ibucontext.device;
+	struct gdma_queue *eq;
+	int i;
+
+	if (!ucontext->eqs)
+		return;
+
+	for (i = 0; i < gc->max_num_queues; i++) {
+		eq = ucontext->eqs[i].eq;
+		if (!eq)
+			continue;
+
+		mana_gd_destroy_queue(gc, eq);
+	}
+
+	kfree(ucontext->eqs);
+	ucontext->eqs = NULL;
+
+	ibdev_dbg(ibdev, "destroyed eq's count %d\n", gc->max_num_queues);
+}
+
+static int mana_ib_create_eq(struct mana_ib_ucontext *ucontext,
+			     struct mana_ib_dev *mdev)
+{
+	struct ib_device *ibdev = ucontext->ibucontext.device;
+	struct gdma_dev *gd = mdev->gdma_dev;
+	struct gdma_queue_spec spec = {};
+	struct gdma_queue *queue;
+	struct gdma_context *gc;
+	int err;
+	int i;
+
+	gc = gd->gdma_context;
+
+	ucontext->eqs = kcalloc(gc->max_num_queues, sizeof(struct mana_eq),
+				GFP_KERNEL);
+	if (!ucontext->eqs)
+		return -ENOMEM;
+
+	spec.type = GDMA_EQ;
+	spec.monitor_avl_buf = false;
+	spec.queue_size = EQ_SIZE;
+	spec.eq.callback = NULL;
+	spec.eq.context = ucontext->eqs;
+	spec.eq.log2_throttle_limit = LOG2_EQ_THROTTLE;
+	spec.eq.msix_allocated = true;
+
+	for (i = 0; i < gc->max_num_queues; i++) {
+		spec.eq.msix_index = i;
+		err = mana_gd_create_mana_eq(gd, &spec, &queue);
+		if (err)
+			goto out;
+
+		queue->eq.disable_needed = true;
+		ucontext->eqs[i].eq = queue;
+	}
+
+	return 0;
+
+out:
+	ibdev_dbg(ibdev, "Failed to allocated eq err %d\n", err);
+	mana_ib_destroy_eq(ucontext, mdev);
+	return err;
+}
+
 static int mana_gd_destroy_doorbell_page(struct gdma_context *gc,
 					 int doorbell_page)
 {
@@ -225,7 +294,17 @@ int mana_ib_alloc_ucontext(struct ib_ucontext *ibcontext,
 
 	ucontext->doorbell = doorbell_page;
 
+	ret = mana_ib_create_eq(ucontext, mdev);
+	if (ret) {
+		ibdev_dbg(ibdev, "Failed to create eq's , ret %d\n", ret);
+		goto err;
+	}
+
 	return 0;
+
+err:
+	mana_gd_destroy_doorbell_page(gc, doorbell_page);
+	return ret;
 }
 
 void mana_ib_dealloc_ucontext(struct ib_ucontext *ibcontext)
@@ -239,6 +318,8 @@ void mana_ib_dealloc_ucontext(struct ib_ucontext *ibcontext)
 
 	mdev = container_of(ibdev, struct mana_ib_dev, ib_dev);
 	gc = mdev->gdma_dev->gdma_context;
+
+	mana_ib_destroy_eq(mana_ucontext, mdev);
 
 	ret = mana_gd_destroy_doorbell_page(gc, mana_ucontext->doorbell);
 	if (ret)
