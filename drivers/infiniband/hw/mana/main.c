@@ -171,13 +171,19 @@ static void mana_ib_destroy_eq(struct mana_ib_ucontext *ucontext,
 static int mana_ib_create_eq(struct mana_ib_ucontext *ucontext,
 			     struct mana_ib_dev *mdev)
 {
-	struct ib_device *ibdev = ucontext->ibucontext.device;
-	struct gdma_dev *gd = mdev->gdma_dev;
 	struct gdma_queue_spec spec = {};
 	struct gdma_queue *queue;
 	struct gdma_context *gc;
+	struct ib_device *ibdev;
+	struct gdma_dev *gd;
 	int err;
 	int i;
+
+	if (!ucontext || !mdev)
+		return -EINVAL;
+
+	ibdev = ucontext->ibucontext.device;
+	gd = mdev->gdma_dev;
 
 	gc = gd->gdma_context;
 

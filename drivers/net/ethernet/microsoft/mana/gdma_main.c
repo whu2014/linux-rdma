@@ -373,8 +373,8 @@ static void mana_gd_process_eq_events(struct list_head *eq_list)
 	u32 owner_bits, new_bits, old_bits;
 	union gdma_eqe_info eqe_info;
 	struct gdma_eqe *eq_eqe_ptr;
-	struct gdma_queue *eq;
 	struct gdma_context *gc;
+	struct gdma_queue *eq;
 	struct gdma_eqe *eqe;
 	u32 head, num_eqe;
 	int i;
@@ -509,6 +509,7 @@ static void mana_gd_deregister_irq(struct gdma_queue *queue)
 	}
 
 	spin_unlock_irqrestore(&r->lock, flags);
+	synchronize_rcu();
 
 	queue->eq.msix_index = INVALID_PCI_MSIX_INDEX;
 }
