@@ -160,6 +160,7 @@ struct mana_ib_dm {
 struct mana_ib_cq {
 	struct ib_cq ibcq;
 	struct mana_ib_queue queue;
+	struct gdma_queue *gdma_cq;
 	/* protects CQ polling */
 	spinlock_t cq_lock;
 	struct list_head list_send_qp;

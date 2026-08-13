@@ -904,6 +904,28 @@ ssize_t mana_gd_read_ring(struct gdma_queue *q, char __user *buf,
 	return copied;
 }
 
+static struct gdma_queue *mana_gd_get_cq(struct gdma_context *gc, u32 cq_id)
+{
+	struct gdma_queue __rcu **cq_table;
+	struct gdma_queue *cq = NULL;
+
+	/* The acquire pairs with the release-store that publishes the table. */
+	cq_table = smp_load_acquire(&gc->cq_table);
+	if (cq_table && cq_id < READ_ONCE(gc->max_num_cqs)) {
+		cq = rcu_dereference(cq_table[cq_id]);
+		if (cq && !refcount_inc_not_zero(&cq->cq.refcount))
+			cq = NULL;
+	}
+
+	return cq;
+}
+
+static void mana_gd_put_cq(struct gdma_queue *cq)
+{
+	if (cq && refcount_dec_and_test(&cq->cq.refcount))
+		complete(&cq->cq.free);
+}
+
 static void mana_gd_process_eqe(struct gdma_queue *eq)
 {
 	u32 head = eq->head % (eq->queue_size / GDMA_EQE_SIZE);
@@ -922,16 +944,16 @@ static void mana_gd_process_eqe(struct gdma_queue *eq)
 	switch (type) {
 	case GDMA_EQE_COMPLETION:
 		cq_id = eqe->details[0] & 0xFFFFFF;
-		if (WARN_ON_ONCE(cq_id >= gc->max_num_cqs))
+		cq = mana_gd_get_cq(gc, cq_id);
+		/* CQ already torn down: stale completion, drop it. */
+		if (!cq)
 			break;
 
-		cq = gc->cq_table[cq_id];
-		if (WARN_ON_ONCE(!cq || cq->type != GDMA_CQ || cq->id != cq_id))
-			break;
-
-		if (cq->cq.callback)
+		if (!WARN_ON_ONCE(cq->type != GDMA_CQ || cq->id != cq_id) &&
+		    cq->cq.callback)
 			cq->cq.callback(cq->cq.context, cq);
 
+		mana_gd_put_cq(cq);
 		break;
 
 	case GDMA_EQE_TEST_EVENT:
@@ -1227,18 +1249,62 @@ static void mana_gd_create_cq(const struct gdma_queue_spec *spec,
 	queue->cq.callback = spec->cq.callback;
 }
 
+int mana_gd_publish_cq(struct gdma_context *gc, struct gdma_queue *queue)
+{
+	struct gdma_queue __rcu **cq_table;
+	u32 id = READ_ONCE(queue->id);
+
+	/* Only mana_gd_get_cq() (IRQ) races the table publish and needs the
+	 * acquire; this control path does not.
+	 */
+	cq_table = READ_ONCE(gc->cq_table);
+	if (!cq_table || id >= READ_ONCE(gc->max_num_cqs))
+		return -EINVAL;
+
+	/* Sharing a CQ between WQs is not supported. */
+	if (rcu_access_pointer(cq_table[id]))
+		return -EINVAL;
+
+	refcount_set(&queue->cq.refcount, 1);
+	init_completion(&queue->cq.free);
+	rcu_assign_pointer(cq_table[id], queue);
+
+	return 0;
+}
+EXPORT_SYMBOL_NS(mana_gd_publish_cq, "NET_MANA");
+
+void mana_gd_unpublish_cq(struct gdma_context *gc, struct gdma_queue *queue)
+{
+	struct gdma_queue __rcu **cq_table;
+	u32 id;
+
+	if (!queue)
+		return;
+
+	id = READ_ONCE(queue->id);
+
+	/* Only mana_gd_get_cq() (IRQ) races the table publish and needs the
+	 * acquire; this control path does not.
+	 */
+	cq_table = READ_ONCE(gc->cq_table);
+	if (!cq_table || id >= READ_ONCE(gc->max_num_cqs) ||
+	    rcu_access_pointer(cq_table[id]) != queue)
+		return;
+
+	rcu_assign_pointer(cq_table[id], NULL);
+
+	/* Drop the publish reference and wait for any handler that already
+	 * took one, so the caller can free the CQ.
+	 */
+	mana_gd_put_cq(queue);
+	wait_for_completion(&queue->cq.free);
+}
+EXPORT_SYMBOL_NS(mana_gd_unpublish_cq, "NET_MANA");
+
 static void mana_gd_destroy_cq(struct gdma_context *gc,
 			       struct gdma_queue *queue)
 {
-	u32 id = queue->id;
-
-	if (id >= gc->max_num_cqs)
-		return;
-
-	if (!gc->cq_table[id])
-		return;
-
-	gc->cq_table[id] = NULL;
+	mana_gd_unpublish_cq(gc, queue);
 }
 
 int mana_gd_create_hwc_queue(struct gdma_dev *gd,
@@ -1526,7 +1592,13 @@ void mana_gd_destroy_queue(struct gdma_context *gc, struct gdma_queue *queue)
 
 	mana_gd_destroy_dma_region(gc, gmi->dma_region_handle);
 	mana_gd_free_memory(gmi);
-	kfree(queue);
+	/* The EQ handler may still be looking this CQ up; free it after a
+	 * grace period.
+	 */
+	if (queue->type == GDMA_CQ)
+		kfree_rcu(queue, rcu);
+	else
+		kfree(queue);
 }
 EXPORT_SYMBOL_NS(mana_gd_destroy_queue, "NET_MANA");
 

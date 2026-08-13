@@ -114,11 +114,12 @@ int mana_ib_destroy_cq(struct ib_cq *ibcq, struct ib_udata *udata)
 
 	mdev = container_of(ibdev, struct mana_ib_dev, ib_dev);
 
+	/* Detach the dispatch entry first, then stop the HW CQ and free the
+	 * queue.  A completion racing teardown then finds an empty slot, and
+	 * a recycled cq_id cannot alias this CQ.  Errors are logged inside.
+	 */
 	mana_ib_remove_cq_cb(mdev, cq);
 
-	/* Ignore return code as there is not much we can do about it.
-	 * The error message is printed inside.
-	 */
 	mana_ib_gd_destroy_cq(mdev, cq);
 
 	mana_ib_destroy_queue(mdev, &cq->queue);
@@ -138,12 +139,8 @@ int mana_ib_install_cq_cb(struct mana_ib_dev *mdev, struct mana_ib_cq *cq)
 {
 	struct gdma_context *gc = mdev_to_gc(mdev);
 	struct gdma_queue *gdma_cq;
+	int err;
 
-	if (cq->queue.id >= gc->max_num_cqs)
-		return -EINVAL;
-	/* Create CQ table entry, sharing a CQ between WQs is not supported */
-	if (gc->cq_table[cq->queue.id])
-		return -EINVAL;
 	if (cq->queue.kmem)
 		gdma_cq = cq->queue.kmem;
 	else
@@ -155,23 +152,30 @@ int mana_ib_install_cq_cb(struct mana_ib_dev *mdev, struct mana_ib_cq *cq)
 	gdma_cq->type = GDMA_CQ;
 	gdma_cq->cq.callback = mana_ib_cq_handler;
 	gdma_cq->id = cq->queue.id;
-	gc->cq_table[cq->queue.id] = gdma_cq;
+
+	err = mana_gd_publish_cq(gc, gdma_cq);
+	if (err) {
+		if (!cq->queue.kmem)
+			kfree(gdma_cq);
+		return err;
+	}
+
+	cq->gdma_cq = gdma_cq;
 	return 0;
 }
 
 void mana_ib_remove_cq_cb(struct mana_ib_dev *mdev, struct mana_ib_cq *cq)
 {
 	struct gdma_context *gc = mdev_to_gc(mdev);
+	struct gdma_queue *gdma_cq;
 
-	if (cq->queue.id >= gc->max_num_cqs || cq->queue.id == INVALID_QUEUE_ID)
+	gdma_cq = xchg(&cq->gdma_cq, NULL);
+	if (!gdma_cq)
 		return;
 
-	if (cq->queue.kmem)
-	/* Then it will be cleaned and removed by the mana */
-		return;
-
-	kfree(gc->cq_table[cq->queue.id]);
-	gc->cq_table[cq->queue.id] = NULL;
+	mana_gd_unpublish_cq(gc, gdma_cq);
+	if (!cq->queue.kmem)
+		kfree_rcu(gdma_cq, rcu);
 }
 
 int mana_ib_arm_cq(struct ib_cq *ibcq, enum ib_cq_notify_flags flags)

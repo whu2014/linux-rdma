@@ -2643,6 +2643,7 @@ static void mana_deinit_txq(struct mana_port_context *apc, struct mana_txq *txq)
 
 static void mana_destroy_txq(struct mana_port_context *apc)
 {
+	struct gdma_context *gc = apc->ac->gdma_dev->gdma_context;
 	struct napi_struct *napi;
 	int i;
 
@@ -2664,6 +2665,8 @@ static void mana_destroy_txq(struct mana_port_context *apc)
 			netif_napi_del_locked(napi);
 			apc->tx_qp[i]->txq.napi_initialized = false;
 		}
+
+		mana_gd_unpublish_cq(gc, apc->tx_qp[i]->tx_cq.gdma_cq);
 
 		if (apc->tx_qp[i]->tx_object != INVALID_MANA_HANDLE)
 			mana_destroy_wq_obj(apc, GDMA_SQ, apc->tx_qp[i]->tx_object);
@@ -2818,12 +2821,9 @@ static int mana_create_txq(struct mana_port_context *apc,
 
 		cq->gdma_id = cq->gdma_cq->id;
 
-		if (WARN_ON(cq->gdma_id >= gc->max_num_cqs)) {
-			err = -EINVAL;
+		err = mana_gd_publish_cq(gc, cq->gdma_cq);
+		if (err)
 			goto out;
-		}
-
-		gc->cq_table[cq->gdma_id] = cq->gdma_cq;
 
 		mana_create_txq_debugfs(apc, i);
 
@@ -2879,6 +2879,8 @@ static void mana_destroy_rxq(struct mana_port_context *apc,
 
 	if (xdp_rxq_info_is_reg(&rxq->xdp_rxq))
 		xdp_rxq_info_unreg(&rxq->xdp_rxq);
+
+	mana_gd_unpublish_cq(gc, rxq->rx_cq.gdma_cq);
 
 	if (rxq->rxobj != INVALID_MANA_HANDLE)
 		mana_destroy_wq_obj(apc, GDMA_RQ, rxq->rxobj);
@@ -3144,12 +3146,9 @@ static struct mana_rxq *mana_create_rxq(struct mana_port_context *apc,
 	if (err)
 		goto out;
 
-	if (WARN_ON(cq->gdma_id >= gc->max_num_cqs)) {
-		err = -EINVAL;
+	err = mana_gd_publish_cq(gc, cq->gdma_cq);
+	if (err)
 		goto out;
-	}
-
-	gc->cq_table[cq->gdma_id] = cq->gdma_cq;
 
 	netif_napi_add_weight_locked(ndev, &cq->napi, mana_poll, 1);
 
