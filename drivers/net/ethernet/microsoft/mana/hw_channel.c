@@ -17,6 +17,12 @@ static int mana_hwc_get_msg_index(struct hw_channel_context *hwc, u16 *msg_id)
 
 	spin_lock_irqsave(&r->lock, flags);
 
+	if (hwc->hwc_timed_out) {
+		spin_unlock_irqrestore(&r->lock, flags);
+		up(&hwc->sema);
+		return -ETIMEDOUT;
+	}
+
 	index = find_first_zero_bit(hwc->inflight_msg_res.map,
 				    hwc->inflight_msg_res.size);
 
@@ -36,12 +42,15 @@ static int mana_hwc_get_msg_index(struct hw_channel_context *hwc, u16 *msg_id)
 	return 0;
 }
 
-static void mana_hwc_put_msg_index(struct hw_channel_context *hwc, u16 msg_id)
+static void mana_hwc_put_msg_index(struct hw_channel_context *hwc, u16 msg_id,
+				   bool timed_out)
 {
 	struct gdma_resource *r = &hwc->inflight_msg_res;
 	unsigned long flags;
 
 	spin_lock_irqsave(&r->lock, flags);
+	if (timed_out)
+		hwc->hwc_timed_out = true;
 	bitmap_clear(hwc->inflight_msg_res.map, msg_id, 1);
 	spin_unlock_irqrestore(&r->lock, flags);
 
@@ -966,7 +975,8 @@ static int mana_hwc_response_status(struct hw_channel_context *hwc,
 }
 
 static void mana_hwc_finish_request(struct hw_channel_context *hwc,
-				    struct hwc_caller_ctx *ctx, u16 msg_id)
+				    struct hwc_caller_ctx *ctx, u16 msg_id,
+				    bool timed_out)
 {
 	unsigned long flags;
 
@@ -974,7 +984,7 @@ static void mana_hwc_finish_request(struct hw_channel_context *hwc,
 	ctx->output_buf = NULL;
 	spin_unlock_irqrestore(&ctx->lock, flags);
 
-	mana_hwc_put_msg_index(hwc, msg_id);
+	mana_hwc_put_msg_index(hwc, msg_id, timed_out);
 }
 
 int mana_hwc_send_request(struct hw_channel_context *hwc, u32 req_len,
@@ -992,7 +1002,9 @@ int mana_hwc_send_request(struct hw_channel_context *hwc, u32 req_len,
 	u16 msg_id;
 	int err;
 
-	mana_hwc_get_msg_index(hwc, &msg_id);
+	err = mana_hwc_get_msg_index(hwc, &msg_id);
+	if (err)
+		return err;
 
 	tx_wr = &txq->msg_buf->reqs[msg_id];
 	ctx = hwc->caller_ctx + msg_id;
@@ -1000,7 +1012,7 @@ int mana_hwc_send_request(struct hw_channel_context *hwc, u32 req_len,
 	if (req_len > tx_wr->buf_len) {
 		dev_err(hwc->dev, "HWC: req msg size: %d > %d\n", req_len,
 			tx_wr->buf_len);
-		mana_hwc_finish_request(hwc, ctx, msg_id);
+		mana_hwc_finish_request(hwc, ctx, msg_id, false);
 		return -EINVAL;
 	}
 
@@ -1029,7 +1041,7 @@ int mana_hwc_send_request(struct hw_channel_context *hwc, u32 req_len,
 	err = mana_hwc_post_tx_wqe(txq, tx_wr, dest_vrq, dest_vrcq, false);
 	if (err) {
 		dev_err(hwc->dev, "HWC: Failed to post send WQE: %d\n", err);
-		mana_hwc_finish_request(hwc, ctx, msg_id);
+		mana_hwc_finish_request(hwc, ctx, msg_id, false);
 		return err;
 	}
 
@@ -1042,7 +1054,7 @@ int mana_hwc_send_request(struct hw_channel_context *hwc, u32 req_len,
 		spin_unlock_irqrestore(&ctx->lock, flags);
 
 		if (err != -EINPROGRESS) {
-			mana_hwc_finish_request(hwc, ctx, msg_id);
+			mana_hwc_finish_request(hwc, ctx, msg_id, false);
 			return mana_hwc_response_status(hwc, command, err, status);
 		}
 
@@ -1054,7 +1066,7 @@ int mana_hwc_send_request(struct hw_channel_context *hwc, u32 req_len,
 		if (hwc->hwc_timeout > 1)
 			hwc->hwc_timeout = 1;
 
-		mana_hwc_finish_request(hwc, ctx, msg_id);
+		mana_hwc_finish_request(hwc, ctx, msg_id, true);
 		return -ETIMEDOUT;
 	}
 
@@ -1064,6 +1076,6 @@ int mana_hwc_send_request(struct hw_channel_context *hwc, u32 req_len,
 	status = ctx->status_code;
 	spin_unlock_irqrestore(&ctx->lock, flags);
 
-	mana_hwc_finish_request(hwc, ctx, msg_id);
+	mana_hwc_finish_request(hwc, ctx, msg_id, false);
 	return mana_hwc_response_status(hwc, command, err, status);
 }
