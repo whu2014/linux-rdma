@@ -4,6 +4,8 @@
 #ifndef _SHM_CHANNEL_H
 #define _SHM_CHANNEL_H
 
+#include <linux/mutex.h>
+
 #define SMC_APERTURE_BITS 256
 #define SMC_BASIC_UNIT (sizeof(u32))
 #define SMC_APERTURE_DWORDS (SMC_APERTURE_BITS / (SMC_BASIC_UNIT * 8))
@@ -13,6 +15,9 @@
 struct shm_channel {
 	struct device *dev;
 	void __iomem *base;
+	/* Protects base and complete aperture request/response transactions. */
+	struct mutex transaction_lock;
+	bool transaction_lock_initialized;
 };
 
 void mana_smc_init(struct shm_channel *sc, struct device *dev,
