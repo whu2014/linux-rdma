@@ -501,6 +501,17 @@ struct gdma_context {
 
 	struct workqueue_struct *service_wq;
 
+	/* lifecycle_lock serializes setup/cleanup with reset service work.
+	 * service_lock gates scheduling and service_stopping; it is never held
+	 * while taking lifecycle_lock or waiting for service_reset_work.
+	 */
+	struct mutex		lifecycle_lock;
+	/* Protect service_reset_work and service_stopping. */
+	spinlock_t		service_lock;
+	wait_queue_head_t	service_waitq;
+	struct mana_serv_work	*service_reset_work;
+	bool			service_stopping;
+
 	unsigned long		flags;
 
 	/* Protect access to GIC context */
