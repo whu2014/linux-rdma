@@ -693,7 +693,7 @@ static int mana_hwc_establish_channel(struct gdma_context *gc, u16 *q_depth,
 				 cq->mem_info.dma_handle,
 				 rq->mem_info.dma_handle,
 				 sq->mem_info.dma_handle,
-				 eq->eq.msix_index);
+				 eq->eq.msix_index, &hwc->setup_active);
 	if (err)
 		return err;
 
@@ -799,6 +799,13 @@ int mana_hwc_create_channel(struct gdma_context *gc)
 	u16 q_depth_max;
 	int err;
 
+	/* Retry a retained context before assigning queues to the PF again. */
+	if (gd->driver_data) {
+		mana_hwc_destroy_channel(gc);
+		if (gd->driver_data)
+			return -ETIMEDOUT;
+	}
+
 	hwc = kzalloc_obj(*hwc);
 	if (!hwc)
 		return -ENOMEM;
@@ -848,33 +855,55 @@ out:
 	return err;
 }
 
+static void mana_hwc_fence_channel(struct gdma_context *gc,
+				   struct hw_channel_context *hwc)
+{
+	if (!hwc->cq)
+		return;
+
+	if (hwc->cq->gdma_eq)
+		mana_gd_fence_eq(gc, hwc->cq->gdma_eq);
+
+	if (hwc->cq->gdma_cq)
+		mana_gd_unpublish_cq(gc, hwc->cq->gdma_cq);
+}
+
 void mana_hwc_destroy_channel(struct gdma_context *gc)
 {
 	struct hw_channel_context *hwc = gc->hwc.driver_data;
 	struct gdma_queue __rcu **old_cq_table;
+	int err;
 
 	if (!hwc)
 		return;
 
-	/* gc->max_num_cqs is set in mana_hwc_init_event_handler(). If it's
-	 * non-zero, the HWC worked and we should tear down the HWC here.
+	/* An unacknowledged destroy leaves the PF's mappings live.  Fence
+	 * software dispatch, but retain every PF-visible allocation.
 	 */
-	if (gc->max_num_cqs > 0)
-		mana_smc_teardown_hwc(&gc->shm_channel, false);
+	err = mana_smc_teardown_hwc(&gc->shm_channel, false,
+				    &hwc->setup_active);
+	if (err) {
+		dev_err(hwc->dev,
+			"HWC teardown failed: %d, retaining PF-visible resources\n",
+			err);
+		mana_hwc_fence_channel(gc, hwc);
+		return;
+	}
 
-	if (hwc->txq)
-		mana_hwc_destroy_wq(hwc, hwc->txq);
-
-	if (hwc->rxq)
-		mana_hwc_destroy_wq(hwc, hwc->rxq);
-
+	/* Fence the EQ before releasing any state its handlers can reach. */
 	if (hwc->cq)
 		mana_hwc_destroy_cq(hwc->gdma_dev->gdma_context, hwc->cq);
 
 	/* Reset only after mana_hwc_destroy_cq() has cleared the CQ table
 	 * slot, so it is not left dangling.
 	 */
-	gc->max_num_cqs = 0;
+	WRITE_ONCE(gc->max_num_cqs, 0);
+
+	if (hwc->txq)
+		mana_hwc_destroy_wq(hwc, hwc->txq);
+
+	if (hwc->rxq)
+		mana_hwc_destroy_wq(hwc, hwc->rxq);
 
 	kfree(hwc->caller_ctx);
 	hwc->caller_ctx = NULL;

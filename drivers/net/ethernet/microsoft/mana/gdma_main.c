@@ -1172,21 +1172,30 @@ out:
 	return err;
 }
 
-static void mana_gd_destroy_eq(struct gdma_context *gc, bool flush_evenets,
+static void mana_gd_destroy_eq(struct gdma_context *gc, bool flush_events,
 			       struct gdma_queue *queue)
 {
 	int err;
 
-	if (flush_evenets) {
+	if (queue->eq.msix_index == INVALID_PCI_MSIX_INDEX)
+		return;
+
+	if (flush_events) {
 		err = mana_gd_test_eq(gc, queue);
 		if (err && mana_need_log(gc, err))
 			dev_warn(gc->dev, "Failed to flush EQ: %d\n", err);
 	}
 
 	mana_gd_deregister_irq(queue);
+	queue->eq.msix_index = INVALID_PCI_MSIX_INDEX;
 
 	if (queue->eq.disable_needed)
 		mana_gd_disable_queue(queue);
+}
+
+void mana_gd_fence_eq(struct gdma_context *gc, struct gdma_queue *queue)
+{
+	mana_gd_destroy_eq(gc, false, queue);
 }
 
 static int mana_gd_create_eq(struct gdma_dev *gd,

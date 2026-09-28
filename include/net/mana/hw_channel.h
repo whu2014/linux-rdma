@@ -201,6 +201,8 @@ struct hw_channel_context {
 	u32 dest_vrcq_id;
 	u32 hwc_timeout;
 
+	/* The PF may own the HWC queues while this is true. */
+	bool setup_active;
 	struct hwc_caller_ctx *caller_ctx;
 };
 
